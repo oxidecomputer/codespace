@@ -185,7 +185,6 @@ impl Codespace {
 
     /// Convert into the root [`Mod`], consuming the `Codespace`. Useful when
     /// inserting a `Codespace` into another `Codespace`.
-    #[must_use]
     pub fn into_root_mod(self) -> Mod {
         self.root
     }
@@ -200,7 +199,6 @@ impl Codespace {
     /// root module's visibility is irrelevant here--the root is emitted flat,
     /// with no surrounding `mod` block. Each submodule's docs, attributes,
     /// and [`Visibility`] are emitted on its `mod` block.
-    #[must_use]
     pub fn into_stream(self) -> TokenStream {
         let mut out = self.root.inner_meta();
         out.extend(self.root.into_stream());
@@ -230,7 +228,6 @@ impl Codespace {
     ///
     /// [rustfmt]: https://github.com/rust-lang/rustfmt
     /// [prettyplease]: https://docs.rs/prettyplease
-    #[must_use]
     pub fn into_files(self) -> BTreeMap<PathBuf, TokenStream> {
         let mut files = BTreeMap::new();
         let mut contents = self.root.inner_meta();
