@@ -46,6 +46,9 @@
 //! Within each [`Mod`], items are emitted in sort-key order and submodules
 //! in alphabetical order by name.
 
+#![forbid(unsafe_code)]
+#![warn(missing_docs, missing_debug_implementations)]
+
 use std::{
     collections::{btree_map::Entry, BTreeMap},
     path::{Path, PathBuf},
@@ -67,7 +70,7 @@ fn validate_mod_name(name: &str, full: &str) {
     // syn must accept `gen` (an identifier before edition 2024), but our
     // generated code may land in a 2024 crate, so we reject it ourselves.
     if name == "gen" {
-        panic!("module name {:?} (in {:?}) is a Rust keyword", name, full);
+        panic!("module name {name:?} (in {full:?}) is a Rust keyword");
     }
     if !name.starts_with("r#") && syn::parse_str::<syn::Ident>(name).is_ok() {
         return;
@@ -84,12 +87,11 @@ fn validate_mod_name(name: &str, full: &str) {
             )
         });
     if is_keyword {
-        panic!("module name {:?} (in {:?}) is a Rust keyword", name, full);
+        panic!("module name {name:?} (in {full:?}) is a Rust keyword");
     }
     panic!(
-        "module name {:?} (in {:?}) is not a valid Rust identifier \
+        "module name {name:?} (in {full:?}) is not a valid Rust identifier \
          (raw identifiers are not supported)",
-        name, full,
     );
 }
 
@@ -183,6 +185,7 @@ impl Codespace {
 
     /// Convert into the root [`Mod`], consuming the `Codespace`. Useful when
     /// inserting a `Codespace` into another `Codespace`.
+    #[must_use]
     pub fn into_root_mod(self) -> Mod {
         self.root
     }
@@ -197,6 +200,7 @@ impl Codespace {
     /// root module's visibility is irrelevant here--the root is emitted flat,
     /// with no surrounding `mod` block. Each submodule's docs, attributes,
     /// and [`Visibility`] are emitted on its `mod` block.
+    #[must_use]
     pub fn into_stream(self) -> TokenStream {
         let mut out = self.root.inner_meta();
         out.extend(self.root.into_stream());
@@ -226,6 +230,7 @@ impl Codespace {
     ///
     /// [rustfmt]: https://github.com/rust-lang/rustfmt
     /// [prettyplease]: https://docs.rs/prettyplease
+    #[must_use]
     pub fn into_files(self) -> BTreeMap<PathBuf, TokenStream> {
         let mut files = BTreeMap::new();
         let mut contents = self.root.inner_meta();
@@ -505,7 +510,7 @@ impl Mod {
                 #vis mod #ident;
             });
             let (file, child_dir) = if m.mods.is_empty() {
-                (dir.join(format!("{}.rs", name)), dir.to_path_buf())
+                (dir.join(format!("{name}.rs")), dir.to_path_buf())
             } else {
                 let child_dir = dir.join(&name);
                 (child_dir.join("mod.rs"), child_dir)
@@ -622,7 +627,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "is not a valid Rust identifier")]
     fn invalid_mod_name_panics() {
         let mut cs = Codespace::default();
         cs.add_item("not-valid-ident::key", quote! {});
@@ -671,7 +676,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "is not a valid Rust identifier")]
     fn get_mod_invalid_ident_panics() {
         let mut cs = Codespace::default();
         cs.get_root_mod().get_mod("not-valid");
@@ -751,9 +756,9 @@ mod tests {
         m.add_attr(quote! { allow(dead_code) });
         m.add_item("f", quote! { pub fn f() {} });
         let out = no_ws(&cs.into_stream().to_string());
-        assert!(out.contains(r##"#[doc="Helperfunctions."]"##));
+        assert!(out.contains(r#"#[doc="Helperfunctions."]"#));
         // Metadata appears immediately before the mod, in outer form.
-        assert!(out.contains(r##"#[allow(dead_code)]pubmodhelpers{"##));
+        assert!(out.contains(r#"#[allow(dead_code)]pubmodhelpers{"#));
         assert!(!out.contains("#!"));
     }
 
@@ -815,7 +820,7 @@ mod tests {
         let mut cs = Codespace::default();
         cs.get_root_mod().add_mod("m", a);
         let out = no_ws(&cs.into_stream().to_string());
-        assert!(out.contains(r##"#[doc="First."]#[doc=""]#[doc="Second."]"##));
+        assert!(out.contains(r#"#[doc="First."]#[doc=""]#[doc="Second."]"#));
         assert!(out.contains("#[allow(dead_code)]#[allow(unused)]"));
         assert!(out.contains("pub(crate)modm"));
     }
@@ -912,7 +917,7 @@ mod tests {
         // Docs and attrs are outer, at the declaration site, immediately
         // before the visibility and declaration.
         assert!(
-            lib.contains(r##"#[doc="Helperfunctions."]#[allow(dead_code)]pub(crate)modhelpers;"##)
+            lib.contains(r#"#[doc="Helperfunctions."]#[allow(dead_code)]pub(crate)modhelpers;"#)
         );
         // Nothing of the metadata leaks into the child file.
         let helpers = no_ws(&files[Path::new("helpers.rs")].to_string());
@@ -928,7 +933,7 @@ mod tests {
         cs.add_item("Foo", quote! { pub struct Foo; });
         let files = cs.into_files();
         let lib = no_ws(&files[Path::new("lib.rs")].to_string());
-        assert!(lib.starts_with(r##"#![doc="Generatedcode."]#![allow(clippy::all)]"##));
+        assert!(lib.starts_with(r#"#![doc="Generatedcode."]#![allow(clippy::all)]"#));
     }
 
     #[test]
@@ -971,7 +976,7 @@ mod tests {
         // Lines within one call stay in one paragraph; a blank doc line
         // separates calls.
         assert!(out.contains(
-            r##"#[doc="Firstparagraph."]#[doc="Stillthefirst."]#[doc=""]#[doc="Secondparagraph."]"##
+            r#"#[doc="Firstparagraph."]#[doc="Stillthefirst."]#[doc=""]#[doc="Secondparagraph."]"#
         ));
     }
 
@@ -982,9 +987,8 @@ mod tests {
         cs.get_root_mod().add_attr(quote! { allow(clippy::all) });
         cs.add_item("Foo", quote! { pub struct Foo; });
         let out = no_ws(&cs.into_stream().to_string());
-        assert!(out.starts_with(
-            r##"#![doc="Generatedcode."]#![doc="Donotedit."]#![allow(clippy::all)]"##
-        ));
+        assert!(out
+            .starts_with(r#"#![doc="Generatedcode."]#![doc="Donotedit."]#![allow(clippy::all)]"#));
         assert!(out.contains("pubstructFoo"));
     }
 }
