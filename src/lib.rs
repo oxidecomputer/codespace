@@ -46,6 +46,9 @@
 //! Within each [`Mod`], items are emitted in sort-key order and submodules
 //! in alphabetical order by name.
 
+#![forbid(unsafe_code)]
+#![warn(missing_docs, missing_debug_implementations)]
+
 use std::{
     collections::{btree_map::Entry, BTreeMap},
     path::{Path, PathBuf},
@@ -67,7 +70,7 @@ fn validate_mod_name(name: &str, full: &str) {
     // syn must accept `gen` (an identifier before edition 2024), but our
     // generated code may land in a 2024 crate, so we reject it ourselves.
     if name == "gen" {
-        panic!("module name {:?} (in {:?}) is a Rust keyword", name, full);
+        panic!("module name {name:?} (in {full:?}) is a Rust keyword");
     }
     if !name.starts_with("r#") && syn::parse_str::<syn::Ident>(name).is_ok() {
         return;
@@ -84,12 +87,11 @@ fn validate_mod_name(name: &str, full: &str) {
             )
         });
     if is_keyword {
-        panic!("module name {:?} (in {:?}) is a Rust keyword", name, full);
+        panic!("module name {name:?} (in {full:?}) is a Rust keyword");
     }
     panic!(
-        "module name {:?} (in {:?}) is not a valid Rust identifier \
+        "module name {name:?} (in {full:?}) is not a valid Rust identifier \
          (raw identifiers are not supported)",
-        name, full,
     );
 }
 
@@ -505,7 +507,7 @@ impl Mod {
                 #vis mod #ident;
             });
             let (file, child_dir) = if m.mods.is_empty() {
-                (dir.join(format!("{}.rs", name)), dir.to_path_buf())
+                (dir.join(format!("{name}.rs")), dir.to_path_buf())
             } else {
                 let child_dir = dir.join(&name);
                 (child_dir.join("mod.rs"), child_dir)
@@ -622,7 +624,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "is not a valid Rust identifier")]
     fn invalid_mod_name_panics() {
         let mut cs = Codespace::default();
         cs.add_item("not-valid-ident::key", quote! {});
@@ -671,7 +673,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "is not a valid Rust identifier")]
     fn get_mod_invalid_ident_panics() {
         let mut cs = Codespace::default();
         cs.get_root_mod().get_mod("not-valid");
@@ -751,9 +753,9 @@ mod tests {
         m.add_attr(quote! { allow(dead_code) });
         m.add_item("f", quote! { pub fn f() {} });
         let out = no_ws(&cs.into_stream().to_string());
-        assert!(out.contains(r##"#[doc="Helperfunctions."]"##));
+        assert!(out.contains(r#"#[doc="Helperfunctions."]"#));
         // Metadata appears immediately before the mod, in outer form.
-        assert!(out.contains(r##"#[allow(dead_code)]pubmodhelpers{"##));
+        assert!(out.contains(r#"#[allow(dead_code)]pubmodhelpers{"#));
         assert!(!out.contains("#!"));
     }
 
@@ -815,9 +817,54 @@ mod tests {
         let mut cs = Codespace::default();
         cs.get_root_mod().add_mod("m", a);
         let out = no_ws(&cs.into_stream().to_string());
-        assert!(out.contains(r##"#[doc="First."]#[doc=""]#[doc="Second."]"##));
+        assert!(out.contains(r#"#[doc="First."]#[doc=""]#[doc="Second."]"#));
         assert!(out.contains("#[allow(dead_code)]#[allow(unused)]"));
         assert!(out.contains("pub(crate)modm"));
+    }
+
+    #[test]
+    fn replace_mod_clobbers_existing() {
+        let mut root = Mod::default();
+        // First insertion: nothing to return.
+        let mut m1 = Mod::default();
+        m1.add_item("f", quote! { pub fn f() {} });
+        assert!(root.replace_mod("client", m1).is_none());
+        // Replacement returns the previous module and clobbers it--no
+        // merging, in contrast to add_mod.
+        let mut m2 = Mod::default();
+        m2.add_item("g", quote! { pub fn g() {} });
+        let prev = root.replace_mod("client", m2).unwrap();
+        assert!(prev.items.contains_key("f"));
+        let mut cs = Codespace::default();
+        *cs.get_root_mod() = root;
+        let out = cs.into_stream().to_string();
+        assert_eq!(out.matches("mod client").count(), 1);
+        assert!(out.contains("fn g"));
+        assert!(!out.contains("fn f"));
+    }
+
+    #[test]
+    #[should_panic(expected = "is a Rust keyword")]
+    fn replace_mod_keyword_panics() {
+        let mut root = Mod::default();
+        root.replace_mod("type", Mod::default());
+    }
+
+    #[test]
+    fn into_root_mod_mounts_in_another_codespace() {
+        // Generate a subsystem in its own Codespace, then mount it as a
+        // submodule of a larger one.
+        let mut inner = Codespace::default();
+        inner.add_item("Foo", quote! { pub struct Foo; });
+        inner.add_item("defaults::f", quote! { pub fn f() {} });
+        let mut outer = Codespace::default();
+        outer.add_item("Bar", quote! { pub struct Bar; });
+        outer.add_mod("subsystem", inner.into_root_mod());
+        let out = no_ws(&outer.into_stream().to_string());
+        assert!(out.contains("pubstructBar"));
+        assert!(out.contains("pubmodsubsystem{"));
+        assert!(out.contains("pubstructFoo"));
+        assert!(out.contains("pubmoddefaults{"));
     }
 
     #[test]
@@ -912,12 +959,33 @@ mod tests {
         // Docs and attrs are outer, at the declaration site, immediately
         // before the visibility and declaration.
         assert!(
-            lib.contains(r##"#[doc="Helperfunctions."]#[allow(dead_code)]pub(crate)modhelpers;"##)
+            lib.contains(r#"#[doc="Helperfunctions."]#[allow(dead_code)]pub(crate)modhelpers;"#)
         );
         // Nothing of the metadata leaks into the child file.
         let helpers = no_ws(&files[Path::new("helpers.rs")].to_string());
         assert!(!helpers.contains("doc"));
         assert!(!helpers.contains("allow"));
+    }
+
+    #[test]
+    fn into_files_non_leaf_decl_carries_metadata() {
+        // Like into_files_decl_carries_metadata, but for a module with
+        // children: metadata belongs on the declaration in the parent, not
+        // in the child's mod.rs.
+        let mut cs = Codespace::default();
+        let m = cs.get_root_mod().get_mod("outer");
+        m.set_visibility(Visibility::Private);
+        m.add_docs("Outer module.");
+        m.add_attr(quote! { allow(dead_code) });
+        m.get_mod("inner").add_item("f", quote! { pub fn f() {} });
+        let files = cs.into_files();
+        let lib = no_ws(&files[Path::new("lib.rs")].to_string());
+        assert!(lib.contains(r#"#[doc="Outermodule."]#[allow(dead_code)]modouter;"#));
+        assert!(!lib.contains("pubmodouter"));
+        // The child's own file holds only its contents and its child's
+        // declaration.
+        let outer = no_ws(&files[Path::new("outer/mod.rs")].to_string());
+        assert_eq!(outer, "pubmodinner;");
     }
 
     #[test]
@@ -928,7 +996,7 @@ mod tests {
         cs.add_item("Foo", quote! { pub struct Foo; });
         let files = cs.into_files();
         let lib = no_ws(&files[Path::new("lib.rs")].to_string());
-        assert!(lib.starts_with(r##"#![doc="Generatedcode."]#![allow(clippy::all)]"##));
+        assert!(lib.starts_with(r#"#![doc="Generatedcode."]#![allow(clippy::all)]"#));
     }
 
     #[test]
@@ -971,7 +1039,7 @@ mod tests {
         // Lines within one call stay in one paragraph; a blank doc line
         // separates calls.
         assert!(out.contains(
-            r##"#[doc="Firstparagraph."]#[doc="Stillthefirst."]#[doc=""]#[doc="Secondparagraph."]"##
+            r#"#[doc="Firstparagraph."]#[doc="Stillthefirst."]#[doc=""]#[doc="Secondparagraph."]"#
         ));
     }
 
@@ -982,9 +1050,8 @@ mod tests {
         cs.get_root_mod().add_attr(quote! { allow(clippy::all) });
         cs.add_item("Foo", quote! { pub struct Foo; });
         let out = no_ws(&cs.into_stream().to_string());
-        assert!(out.starts_with(
-            r##"#![doc="Generatedcode."]#![doc="Donotedit."]#![allow(clippy::all)]"##
-        ));
+        assert!(out
+            .starts_with(r#"#![doc="Generatedcode."]#![doc="Donotedit."]#![allow(clippy::all)]"#));
         assert!(out.contains("pubstructFoo"));
     }
 }

@@ -2,9 +2,11 @@
 name = "codespace"
 version = "0.0.1-alpha.1"
 edition = "2021"
+rust-version = "1.97"
 license = "Apache-2.0"
 repository = "https://github.com/oxidecomputer/codespace"
-description = "A structured container for generated Rust code"
+description = "Structural scratch space for generated Rust code"
+exclude = [".github", "rust-toolchain.toml"]
 
 [dependencies]
 proc-macro2 = "1.0.104"

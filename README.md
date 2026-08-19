@@ -2,7 +2,7 @@
 
 [![codespace on crates.io](https://img.shields.io/crates/v/codespace)](https://crates.io/crates/codespace)
 [![Documentation (latest release)](https://img.shields.io/badge/docs-latest%20version-brightgreen.svg)](https://docs.rs/codespace)
-[![License](https://img.shields.io/badge/license-Apache-green.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache-green.svg)](https://github.com/oxidecomputer/codespace/blob/main/LICENSE)
 
 Structural scratch space for generated Rust code
 
@@ -54,5 +54,5 @@ details.
 
 ## Notes
 
-- Pre-publication; API unstable.
+- Early alpha; API unstable.
 - Part of the typify/progenitor code-generation stack.
