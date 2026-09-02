@@ -307,6 +307,13 @@ impl Mod {
         self.mods.entry(name).or_default()
     }
 
+    /// Return whether a submodule named `name` already exists.
+    ///
+    /// Unlike [`Mod::get_mod`], this never creates the submodule.
+    pub fn has_mod(&self, name: &str) -> bool {
+        self.mods.contains_key(name)
+    }
+
     /// Replace a named submodule, returning the previous value if any.
     ///
     /// # Panics
@@ -706,6 +713,22 @@ mod tests {
     fn raw_ident_mod_name_panics() {
         let mut cs = Codespace::default();
         cs.get_root_mod().get_mod("r#type");
+    }
+
+    #[test]
+    fn has_mod_true_for_existing_false_for_absent() {
+        let mut cs = Codespace::default();
+        cs.get_root_mod().get_mod("foo");
+        assert!(cs.get_root_mod().has_mod("foo"));
+        assert!(!cs.get_root_mod().has_mod("bar"));
+    }
+
+    #[test]
+    fn has_mod_does_not_create() {
+        let mut cs = Codespace::default();
+        assert!(!cs.get_root_mod().has_mod("foo"));
+        let out = cs.into_stream().to_string();
+        assert!(!out.contains("mod foo"));
     }
 
     /// Strip all whitespace so tests are robust to token-spacing details.
