@@ -47,6 +47,16 @@ Both forms are deterministic and unformatted. Callers process the emitted
 `TokenStream`s and apply formatting as needed with [rustfmt](https://github.com/rust-lang/rustfmt)
 or [prettyplease](https://docs.rs/prettyplease).
 
+## Dependencies
+
+A `Codespace` also carries the external crates its code needs, as
+`Dependency` entries a consumer can write as `[dependencies]` lines: crate
+name, an optional rename, a version requirement, and features. Generators
+register what they emit with `Codespace::add_dependency`; registrations of one
+crate merge. Nesting one codespace in another with `Codespace::add_mod_from_codespace`
+carries its list along. codespace never infers a dependency from the code it
+holds.
+
 `codespace` never parses, validates, or understands the fragments it holds, and
 makes no naming decisions. Module names are the exception--invalid names
 (including Rust keywords) are caller bugs and panic. See the crate docs for
