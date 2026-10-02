@@ -35,22 +35,34 @@ Adding an item under an existing key appends those tokens, so a type and its
 `impl` blocks can accumulate separately and still render together. Each `Mod`
 also carries optional metadata: visibility, doc paragraphs, attributes.
 
+`codespace` never parses, validates, or understands the fragments it holds, and
+makes no naming decisions. Module names are the exception--invalid names
+(including Rust keywords) are caller bugs and panic. See the crate docs for
+details.
+
 ## Output
 
 Generators can output tokens into a single `TokenStream` with
 `Codespace::into_stream` or into multiple files with `Codespace::into_files`,
 where each `TokenStream` is intended for a particular file path. The former is
-good for proc macro implementation or calls from a `build.rs` file; the latter can
-be well-suited for a stand-alone crate generator.
+good for proc macro implementation or calls from a `build.rs` file; the latter
+can be well-suited for a stand-alone crate generator.
 
 Both forms are deterministic and unformatted. Callers process the emitted
 `TokenStream`s and apply formatting as needed with [rustfmt](https://github.com/rust-lang/rustfmt)
 or [prettyplease](https://docs.rs/prettyplease).
 
-`codespace` never parses, validates, or understands the fragments it holds, and
-makes no naming decisions. Module names are the exception--invalid names
-(including Rust keywords) are caller bugs and panic. See the crate docs for
-details.
+## Dependencies
+
+A `Codespace` may also include the external dependencies that its code
+requires. Generators register what they emit with `Codespace::add_dependency`;
+entries are kept by the identifier the code uses, and registrations under one
+identifier merge. Nesting one codespace in another with
+`Codespace::add_mod_from_codespace` carries its list along, and
+`Codespace::to_toml_dependencies` writes the `[dependencies]` section of a
+`Cargo.toml` for everything registered. codespace never infers a dependency
+from the code it holds.
+
 
 ## Notes
 

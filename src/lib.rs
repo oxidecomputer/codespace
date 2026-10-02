@@ -45,6 +45,23 @@
 //!
 //! Within each [`Mod`], items are emitted in sort-key order and submodules
 //! in alphabetical order by name.
+//!
+//! ## Dependencies
+//!
+//! A [`Codespace`] may include the external dependencies its code needs, as
+//! [`Dependency`] entries that a consumer can turn into Cargo.toml
+//! `[dependencies]` lines: a crate name, an optional rename, a version
+//! requirement, features, and whether default features are needed. A consumer
+//! can register dependencies it emits with [`Codespace::add_dependency`];
+//! entries are kept by the identifier the code uses, so two versions of one
+//! crate may coexist under two renames, and registrations under a given
+//! identifier merge, with features unioned, `*` yielding to a real
+//! requirement, and anything else that disagrees reported as a
+//! [`DependencyConflict`] (see [`Codespace::dependencies`]). Nesting one
+//! codespace inside another with [`Codespace::add_mod_from_codespace`] merges
+//! dependencies.
+//!
+//! Codespace never infers dependencies from the code it holds.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs, missing_debug_implementations)]
@@ -56,6 +73,10 @@ use std::{
 
 use proc_macro2::{TokenStream, TokenTree};
 use quote::{format_ident, quote};
+
+mod dependency;
+
+pub use dependency::{Dependency, DependencyConflict};
 
 /// Validate a module name segment, panicking with context on failure.
 ///
@@ -132,6 +153,7 @@ impl Visibility {
 #[derive(Debug, Default)]
 pub struct Codespace {
     root: Mod,
+    dependencies: BTreeMap<String, Dependency>,
 }
 
 impl Codespace {
@@ -183,10 +205,99 @@ impl Codespace {
         &mut self.root
     }
 
-    /// Convert into the root [`Mod`], consuming the `Codespace`. Useful when
-    /// inserting a `Codespace` into another `Codespace`.
+    /// Convert into the root [`Mod`], consuming the `Codespace`.
+    ///
+    /// To insert a `Codespace` as a mod, use
+    /// [`Codespace::add_mod_from_codespace`].
     pub fn into_root_mod(self) -> Mod {
         self.root
+    }
+
+    /// Register a dependency the generated code needs.
+    ///
+    /// Entries are kept by the identifier the code uses for the crate (see
+    /// [`Dependency::ident`]), which is the key of the crate's
+    /// `[dependencies]` line, so two versions of one crate may coexist under
+    /// two renames. A second registration under the same identifier merges
+    /// into the first. See [`Dependency`].
+    pub fn add_dependency(&mut self, dep: Dependency) -> Result<(), DependencyConflict> {
+        match self.dependencies.entry(dep.ident()) {
+            Entry::Occupied(e) => e.into_mut().merge(dep),
+            Entry::Vacant(e) => {
+                e.insert(dep);
+                Ok(())
+            }
+        }
+    }
+
+    /// Registered dependencies, in identifier order.
+    pub fn dependencies(&self) -> impl Iterator<Item = &Dependency> {
+        self.dependencies.values()
+    }
+
+    /// The `[dependencies]` section of a `Cargo.toml` for the generated
+    /// code: the header, then one line per registered dependency in
+    /// identifier order, as [`Dependency::to_toml_inline`] writes it,
+    /// ending in a newline. Empty when nothing is registered.
+    pub fn to_toml_dependencies(&self) -> String {
+        if self.dependencies.is_empty() {
+            return String::new();
+        }
+        let mut out = String::from("[dependencies]\n");
+        for dep in self.dependencies.values() {
+            out.push_str(&dep.to_toml_inline());
+            out.push('\n');
+        }
+        out
+    }
+
+    /// Nest `other` as the submodule at `path` and take on its
+    /// dependencies.
+    ///
+    /// `path` is a `"::"` delimited string naming the submodule, such as
+    /// `"types"` or `"api::types"`; every segment is a module name, and
+    /// intermediate modules are created as needed. The module is added as
+    /// [`Mod::add_mod`] adds it, merging into an existing submodule of that
+    /// name, and the returned reference lets the caller set its docs,
+    /// attributes, and visibility. The dependencies merge as
+    /// [`Codespace::add_dependency`] merges them; on a conflict nothing is
+    /// changed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any segment of `path` is not a valid Rust identifier.
+    pub fn add_mod_from_codespace(
+        &mut self,
+        path: impl Into<String>,
+        other: Codespace,
+    ) -> Result<&mut Mod, DependencyConflict> {
+        let deps = other.dependencies.into_values();
+        let m = other.root;
+        let mut merged = self.dependencies.clone();
+        for dep in deps {
+            match merged.entry(dep.ident()) {
+                Entry::Occupied(e) => e.into_mut().merge(dep)?,
+                Entry::Vacant(e) => {
+                    e.insert(dep);
+                }
+            }
+        }
+        self.dependencies = merged;
+
+        let path = path.into();
+        let mut segs = path.split("::").peekable();
+        let mut parent = &mut self.root;
+        loop {
+            let seg = segs.next().expect("path must not be empty");
+            // Validate here (rather than via get_mod) so the panic message
+            // includes the full path the caller passed.
+            validate_mod_name(seg, &path);
+            if segs.peek().is_none() {
+                parent.add_mod(seg, m);
+                return Ok(parent.get_mod(seg));
+            }
+            parent = parent.mods.entry(seg.to_string()).or_default();
+        }
     }
 
     /// Consume the [`Codespace`] and render it into a [`TokenStream`].
@@ -1076,5 +1187,165 @@ mod tests {
         assert!(out
             .starts_with(r#"#![doc="Generatedcode."]#![doc="Donotedit."]#![allow(clippy::all)]"#));
         assert!(out.contains("pubstructFoo"));
+    }
+
+    fn names<'a>(deps: &[&'a Dependency]) -> Vec<&'a str> {
+        deps.iter().map(|x| x.name.as_str()).collect()
+    }
+
+    #[test]
+    fn registrations_are_answered_in_name_order() {
+        let mut cs = Codespace::default();
+        cs.add_dependency(Dependency {
+            version: "1.0".parse().unwrap(),
+            features: vec!["derive".to_string()],
+            ..Dependency::new("serde")
+        })
+        .unwrap();
+        let deps = cs.dependencies().collect::<Vec<_>>();
+        assert_eq!(names(&deps), ["serde"]);
+        assert_eq!(deps[0].features, ["derive"]);
+    }
+
+    #[test]
+    fn registrations_merge_or_conflict() {
+        let mut cs = Codespace::default();
+        cs.add_dependency(Dependency {
+            features: vec!["serde".to_string()],
+            ..Dependency::new("uuid")
+        })
+        .unwrap();
+        cs.add_dependency(Dependency {
+            version: "1.0".parse().unwrap(),
+            features: vec!["v4".to_string()],
+            ..Dependency::new("uuid")
+        })
+        .unwrap();
+        let err = cs
+            .add_dependency(Dependency {
+                version: "2.0".parse().unwrap(),
+                ..Dependency::new("uuid")
+            })
+            .unwrap_err();
+        assert_eq!(err.ident, "uuid");
+        let dep = cs.dependencies().next().unwrap();
+        assert_eq!(dep.features, ["serde", "v4"]);
+        assert_eq!(dep.version.to_string(), "^1.0");
+    }
+
+    #[test]
+    fn toml_dependencies_is_the_whole_section() {
+        let mut cs = Codespace::default();
+        assert_eq!(cs.to_toml_dependencies(), "");
+        cs.add_dependency(Dependency {
+            version: "1.0".parse().unwrap(),
+            features: vec!["serde".to_string(), "v4".to_string()],
+            ..Dependency::new("uuid")
+        })
+        .unwrap();
+        cs.add_dependency(Dependency {
+            version: "0.4".parse().unwrap(),
+            ..Dependency::new("chrono")
+        })
+        .unwrap();
+        assert_eq!(
+            cs.to_toml_dependencies(),
+            "[dependencies]\nchrono = \"0.4\"\nuuid = { version = \"1.0\", features = [\"serde\", \"v4\"] }\n"
+        );
+    }
+
+    #[test]
+    fn two_versions_of_one_crate_live_under_two_identifiers() {
+        let mut cs = Codespace::default();
+        cs.add_dependency(Dependency {
+            rename: Some("schemars08".to_string()),
+            version: "0.8".parse().unwrap(),
+            ..Dependency::new("schemars")
+        })
+        .unwrap();
+        cs.add_dependency(Dependency {
+            rename: Some("schemars1".to_string()),
+            version: "1.0".parse().unwrap(),
+            ..Dependency::new("schemars")
+        })
+        .unwrap();
+        let idents = cs.dependencies().map(Dependency::ident).collect::<Vec<_>>();
+        assert_eq!(idents, ["schemars08", "schemars1"]);
+        assert!(cs.dependencies().all(|dep| dep.name == "schemars"));
+    }
+
+    #[test]
+    fn add_mod_from_codespace_nests_and_carries_dependencies() {
+        let mut inner = Codespace::default();
+        inner.add_item("A", quote! { pub struct A(::chrono::NaiveDate); });
+        inner.add_dependency(Dependency::new("chrono")).unwrap();
+        inner.add_dependency(Dependency::new("json-serde")).unwrap();
+
+        let mut outer = Codespace::default();
+        outer.add_item("Client", quote! { pub struct Client(::reqwest::Client); });
+        outer.add_dependency(Dependency::new("reqwest")).unwrap();
+        let types = outer.add_mod_from_codespace("types", inner).unwrap();
+        types.add_docs("Generated types.");
+
+        assert_eq!(
+            names(&outer.dependencies().collect::<Vec<_>>()),
+            ["chrono", "json-serde", "reqwest"]
+        );
+        let out = no_ws(&outer.into_stream().to_string());
+        assert!(out.contains(r#"#[doc="Generatedtypes."]pubmodtypes{pubstructA"#));
+    }
+
+    #[test]
+    fn add_mod_from_codespace_takes_a_path() {
+        let mut inner = Codespace::default();
+        inner.add_item("A", quote! { pub struct A; });
+        inner.add_dependency(Dependency::new("chrono")).unwrap();
+
+        let mut outer = Codespace::default();
+        outer
+            .add_mod_from_codespace("api::types", inner)
+            .unwrap()
+            .add_docs("Nested two deep.");
+
+        assert_eq!(
+            outer
+                .dependencies()
+                .map(|dep| dep.name.as_str())
+                .collect::<Vec<_>>(),
+            ["chrono"]
+        );
+        let out = no_ws(&outer.into_stream().to_string());
+        assert!(out.contains(r#"pubmodapi{#[doc="Nestedtwodeep."]pubmodtypes{pubstructA"#));
+    }
+
+    #[test]
+    #[should_panic(expected = "is not a valid Rust identifier")]
+    fn add_mod_from_codespace_rejects_a_bad_segment() {
+        let mut outer = Codespace::default();
+        let _ = outer.add_mod_from_codespace("api::not valid", Codespace::default());
+    }
+
+    #[test]
+    fn add_mod_from_codespace_conflict_changes_nothing() {
+        let mut inner = Codespace::default();
+        inner
+            .add_dependency(Dependency {
+                version: "2.0".parse().unwrap(),
+                ..Dependency::new("uuid")
+            })
+            .unwrap();
+        let mut outer = Codespace::default();
+        outer
+            .add_dependency(Dependency {
+                version: "1.0".parse().unwrap(),
+                ..Dependency::new("uuid")
+            })
+            .unwrap();
+        outer.add_mod_from_codespace("types", inner).unwrap_err();
+        assert!(!outer.get_root_mod().has_mod("types"));
+        assert_eq!(
+            outer.dependencies().next().unwrap().version.to_string(),
+            "^1.0"
+        );
     }
 }
