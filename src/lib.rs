@@ -48,12 +48,15 @@
 //!
 //! ## Dependencies
 //!
-//! A [`Codespace`] may also carry the external crates its code needs, as
-//! [`Dependency`] entries a consumer can turn into `[dependencies]` lines: a
-//! crate name, an optional rename, a version requirement, and features. A
-//! consumer can register what it emits with [`Codespace::add_dependency`];
-//! registrations of a given crate merge, with features unioned, `*` yielding
-//! to a real requirement, and anything else that disagrees reported as a
+//! A [`Codespace`] may include the external dependencies its code needs, as
+//! [`Dependency`] entries that a consumer can turn into Cargo.toml
+//! `[dependencies]` lines: a crate name, an optional rename, a version
+//! requirement, features, and whether default features are needed. A consumer
+//! can register dependencies it emits with [`Codespace::add_dependency`];
+//! entries are kept by the identifier the code uses, so two versions of one
+//! crate may coexist under two renames, and registrations under a given
+//! identifier merge, with features unioned, `*` yielding to a real
+//! requirement, and anything else that disagrees reported as a
 //! [`DependencyConflict`] (see [`Codespace::dependencies`]). Nesting one
 //! codespace inside another with [`Codespace::add_mod_from_codespace`] merges
 //! dependencies.
@@ -202,9 +205,10 @@ impl Codespace {
         &mut self.root
     }
 
-    /// Convert into the root [`Mod`], consuming the `Codespace` and
-    /// dropping its dependencies. To insert a `Codespace` into another
-    /// `Codespace` and keep them, use [`Codespace::add_mod_from_codespace`].
+    /// Convert into the root [`Mod`], consuming the `Codespace`.
+    ///
+    /// To insert a `Codespace` as a mod, use
+    /// [`Codespace::add_mod_from_codespace`].
     pub fn into_root_mod(self) -> Mod {
         self.root
     }
@@ -213,7 +217,7 @@ impl Codespace {
     ///
     /// Entries are kept by the identifier the code uses for the crate (see
     /// [`Dependency::ident`]), which is the key of the crate's
-    /// `[dependencies]` line, so two versions of one crate coexist under
+    /// `[dependencies]` line, so two versions of one crate may coexist under
     /// two renames. A second registration under the same identifier merges
     /// into the first. See [`Dependency`].
     pub fn add_dependency(&mut self, dep: Dependency) -> Result<(), DependencyConflict> {
@@ -231,6 +235,22 @@ impl Codespace {
         self.dependencies.values()
     }
 
+    /// The `[dependencies]` section of a `Cargo.toml` for the generated
+    /// code: the header, then one line per registered dependency in
+    /// identifier order, as [`Dependency::to_toml_inline`] writes it,
+    /// ending in a newline. Empty when nothing is registered.
+    pub fn to_toml_dependencies(&self) -> String {
+        if self.dependencies.is_empty() {
+            return String::new();
+        }
+        let mut out = String::from("[dependencies]\n");
+        for dep in self.dependencies.values() {
+            out.push_str(&dep.to_toml_inline());
+            out.push('\n');
+        }
+        out
+    }
+
     /// Nest `other` as the submodule at `path` and take on its
     /// dependencies.
     ///
@@ -245,8 +265,7 @@ impl Codespace {
     ///
     /// # Panics
     ///
-    /// Panics if any segment of `path` is not a valid Rust identifier, as
-    /// [`Codespace::add_item`] does.
+    /// Panics if any segment of `path` is not a valid Rust identifier.
     pub fn add_mod_from_codespace(
         &mut self,
         path: impl Into<String>,
@@ -1171,61 +1190,88 @@ mod tests {
     }
 
     fn names<'a>(deps: &[&'a Dependency]) -> Vec<&'a str> {
-        deps.iter().map(|x| x.name()).collect()
+        deps.iter().map(|x| x.name.as_str()).collect()
     }
 
     #[test]
     fn registrations_are_answered_in_name_order() {
         let mut cs = Codespace::default();
-        cs.add_dependency(
-            Dependency::new("serde")
-                .with_version("1.0".parse().unwrap())
-                .with_features(["derive"]),
-        )
+        cs.add_dependency(Dependency {
+            version: "1.0".parse().unwrap(),
+            features: vec!["derive".to_string()],
+            ..Dependency::new("serde")
+        })
         .unwrap();
         let deps = cs.dependencies().collect::<Vec<_>>();
         assert_eq!(names(&deps), ["serde"]);
-        assert_eq!(deps[0].features(), ["derive"]);
+        assert_eq!(deps[0].features, ["derive"]);
     }
 
     #[test]
     fn registrations_merge_or_conflict() {
         let mut cs = Codespace::default();
-        cs.add_dependency(Dependency::new("uuid").with_features(["serde"]))
-            .unwrap();
-        cs.add_dependency(
-            Dependency::new("uuid")
-                .with_version("1.0".parse().unwrap())
-                .with_features(["v4"]),
-        )
+        cs.add_dependency(Dependency {
+            features: vec!["serde".to_string()],
+            ..Dependency::new("uuid")
+        })
+        .unwrap();
+        cs.add_dependency(Dependency {
+            version: "1.0".parse().unwrap(),
+            features: vec!["v4".to_string()],
+            ..Dependency::new("uuid")
+        })
         .unwrap();
         let err = cs
-            .add_dependency(Dependency::new("uuid").with_version("2.0".parse().unwrap()))
+            .add_dependency(Dependency {
+                version: "2.0".parse().unwrap(),
+                ..Dependency::new("uuid")
+            })
             .unwrap_err();
         assert_eq!(err.ident, "uuid");
         let dep = cs.dependencies().next().unwrap();
-        assert_eq!(dep.features(), ["serde", "v4"]);
-        assert_eq!(dep.version().to_string(), "^1.0");
+        assert_eq!(dep.features, ["serde", "v4"]);
+        assert_eq!(dep.version.to_string(), "^1.0");
+    }
+
+    #[test]
+    fn toml_dependencies_is_the_whole_section() {
+        let mut cs = Codespace::default();
+        assert_eq!(cs.to_toml_dependencies(), "");
+        cs.add_dependency(Dependency {
+            version: "1.0".parse().unwrap(),
+            features: vec!["serde".to_string(), "v4".to_string()],
+            ..Dependency::new("uuid")
+        })
+        .unwrap();
+        cs.add_dependency(Dependency {
+            version: "0.4".parse().unwrap(),
+            ..Dependency::new("chrono")
+        })
+        .unwrap();
+        assert_eq!(
+            cs.to_toml_dependencies(),
+            "[dependencies]\nchrono = \"0.4\"\nuuid = { version = \"1.0\", features = [\"serde\", \"v4\"] }\n"
+        );
     }
 
     #[test]
     fn two_versions_of_one_crate_live_under_two_identifiers() {
         let mut cs = Codespace::default();
-        cs.add_dependency(
-            Dependency::new("schemars")
-                .with_rename("schemars08")
-                .with_version("0.8".parse().unwrap()),
-        )
+        cs.add_dependency(Dependency {
+            rename: Some("schemars08".to_string()),
+            version: "0.8".parse().unwrap(),
+            ..Dependency::new("schemars")
+        })
         .unwrap();
-        cs.add_dependency(
-            Dependency::new("schemars")
-                .with_rename("schemars1")
-                .with_version("1.0".parse().unwrap()),
-        )
+        cs.add_dependency(Dependency {
+            rename: Some("schemars1".to_string()),
+            version: "1.0".parse().unwrap(),
+            ..Dependency::new("schemars")
+        })
         .unwrap();
         let idents = cs.dependencies().map(Dependency::ident).collect::<Vec<_>>();
         assert_eq!(idents, ["schemars08", "schemars1"]);
-        assert!(cs.dependencies().all(|dep| dep.name() == "schemars"));
+        assert!(cs.dependencies().all(|dep| dep.name == "schemars"));
     }
 
     #[test]
@@ -1264,7 +1310,7 @@ mod tests {
         assert_eq!(
             outer
                 .dependencies()
-                .map(Dependency::name)
+                .map(|dep| dep.name.as_str())
                 .collect::<Vec<_>>(),
             ["chrono"]
         );
@@ -1283,16 +1329,22 @@ mod tests {
     fn add_mod_from_codespace_conflict_changes_nothing() {
         let mut inner = Codespace::default();
         inner
-            .add_dependency(Dependency::new("uuid").with_version("2.0".parse().unwrap()))
+            .add_dependency(Dependency {
+                version: "2.0".parse().unwrap(),
+                ..Dependency::new("uuid")
+            })
             .unwrap();
         let mut outer = Codespace::default();
         outer
-            .add_dependency(Dependency::new("uuid").with_version("1.0".parse().unwrap()))
+            .add_dependency(Dependency {
+                version: "1.0".parse().unwrap(),
+                ..Dependency::new("uuid")
+            })
             .unwrap();
         outer.add_mod_from_codespace("types", inner).unwrap_err();
         assert!(!outer.get_root_mod().has_mod("types"));
         assert_eq!(
-            outer.dependencies().next().unwrap().version().to_string(),
+            outer.dependencies().next().unwrap().version.to_string(),
             "^1.0"
         );
     }
