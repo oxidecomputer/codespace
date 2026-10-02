@@ -2,7 +2,10 @@
 
 //! The external dependencies that generated code requires.
 
-use semver::{Comparator, VersionReq};
+use std::ops::Bound;
+
+use semver::{Comparator, Version, VersionReq};
+use version_ranges::Ranges;
 
 /// One line of a `[dependencies]` table: a crate the generated code
 /// refers to and how a consumer should declare it.
@@ -68,12 +71,9 @@ impl Dependency {
     /// does.
     ///
     /// The caller has matched the identifiers; the two must name the same
-    /// crate. Features are unioned, and so is the need for default
-    /// features: one registration needing them is enough, and one leaving
-    /// it unsaid yields. Versions intersect: `*` yields to any other
-    /// requirement, two caret requirements in one compatibility range
-    /// (`^1.5` and `^1.7`) merge to the higher (`^1.7`), and anything else
-    /// must be equal.
+    /// crate. Features are unioned, and so is the need for default features:
+    /// one registration needing them is enough, and one leaving it unsaid
+    /// yields. Versions intersect; see [`intersect`].
     pub(crate) fn merge(&mut self, other: Dependency) -> Result<(), DependencyConflict> {
         debug_assert_eq!(self.ident(), other.ident());
         if self.name != other.name {
@@ -168,6 +168,8 @@ impl Dependency {
     }
 }
 
+/// The requirement that allows exactly the versions both `a` and `b`
+/// allow, or `None` when there is no intersection.
 fn intersect(a: &VersionReq, b: &VersionReq) -> Option<VersionReq> {
     if a == b {
         return Some(a.clone());
@@ -181,10 +183,62 @@ fn intersect(a: &VersionReq, b: &VersionReq) -> Option<VersionReq> {
         return Some(b.clone());
     }
 
-    // More could be done to compare version requirements as those cases
-    // emerge.
+    // Do the full comparison; note that pre-release versions don't survive
+    // this trip.
+    let intersection = Ranges::from_req(a.clone()).intersection(&Ranges::from_req(b.clone()));
+    let mut intervals = intersection.iter();
 
-    None
+    let (lower, upper) = intervals.next()?;
+    assert!(
+        intervals.next().is_none(),
+        "two requirements each allow one interval, so they share at most one"
+    );
+    Some(requirement(lower, upper))
+}
+
+/// The requirement allowing exactly the versions between `lower` and `upper`,
+/// in its conventional spelling.
+fn requirement(lower: &Bound<Version>, upper: &Bound<Version>) -> VersionReq {
+    let text = match (lower, upper) {
+        (Bound::Unbounded, Bound::Unbounded) => unreachable!("handled explicitly"),
+        (Bound::Included(a), Bound::Included(b)) if a == b => format!("={a}"),
+        (Bound::Included(a), Bound::Excluded(b)) if *b == caret_ceiling(a) => format!("^{a}"),
+        (Bound::Included(a), Bound::Excluded(b)) if *b == tilde_ceiling(a) => format!("~{a}"),
+        (lower, upper) => {
+            let lower = match lower {
+                Bound::Included(a) => Some(format!(">={a}")),
+                Bound::Excluded(a) => Some(format!(">{a}")),
+                Bound::Unbounded => None,
+            };
+            let upper = match upper {
+                Bound::Included(b) => Some(format!("<={b}")),
+                Bound::Excluded(b) => Some(format!("<{b}")),
+                Bound::Unbounded => None,
+            };
+            lower
+                .into_iter()
+                .chain(upper)
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    };
+    text.parse()
+        .expect("a requirement written from version bounds parses")
+}
+
+/// The first version a caret requirement on `v` excludes: the next
+/// major, or for `0.x` the next minor, or for `0.0.x` the next patch.
+fn caret_ceiling(v: &Version) -> Version {
+    match (v.major, v.minor) {
+        (0, 0) => Version::new(0, 0, v.patch + 1),
+        (0, minor) => Version::new(0, minor + 1, 0),
+        (major, _) => Version::new(major + 1, 0, 0),
+    }
+}
+
+/// The first version a tilde requirement on `v` excludes: the next minor.
+fn tilde_ceiling(v: &Version) -> Version {
+    Version::new(v.major, v.minor + 1, 0)
 }
 
 /// A version as usually written in Cargo.toml: a lone caret requirement as the
@@ -321,6 +375,10 @@ mod tests {
             "futures-core = \"0.3.1\""
         );
         assert_eq!(
+            at("typespace", "0.0.1-alpha.2").to_toml_inline(),
+            "typespace = \"0.0.1-alpha.2\""
+        );
+        assert_eq!(
             at("serde", ">=1.0, <2").to_toml_inline(),
             "serde = \">=1.0, <2\""
         );
@@ -356,7 +414,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_intersects_caret_versions() {
+    fn merge_intersects_versions() {
         let at = |version: &str| Dependency {
             version: req(version),
             ..Dependency::new("uuid")
@@ -365,19 +423,28 @@ mod tests {
             let mut dep = at(a);
             dep.merge(at(b)).map(|()| dep.version.to_string())
         };
-        assert_eq!(merged("1.5", "1.7").unwrap(), "^1.7");
-        assert_eq!(merged("1.7", "1.5").unwrap(), "^1.7");
+        // The intersection, in its conventional spelling.
+        assert_eq!(merged("1.5", "1.7").unwrap(), "^1.7.0");
+        assert_eq!(merged("1.7", "1.5").unwrap(), "^1.7.0");
         assert_eq!(merged("1", "1.2.3").unwrap(), "^1.2.3");
         assert_eq!(merged("0.4", "0.4.2").unwrap(), "^0.4.2");
-        assert_eq!(merged("0.0.3", "0.0.3").unwrap(), "^0.0.3");
-        // Different compatibility ranges do not intersect.
+        // A caret on 0.0.x allows one version, which is a point.
+        assert_eq!(merged("0.0.3", ">=0.0.3").unwrap(), "=0.0.3");
+        assert_eq!(merged("=1.2.3", "1.2").unwrap(), "=1.2.3");
+        assert_eq!(merged(">=1.0, <2", "1.5").unwrap(), "^1.5.0");
+        assert_eq!(merged("~1.2", "1").unwrap(), "~1.2.0");
+        assert_eq!(merged("1.*", "1.4").unwrap(), "^1.4.0");
+        // A partial overlap is written as comparisons, nothing redundant.
+        assert_eq!(merged(">=1.2, <1.8", ">=1.5").unwrap(), ">=1.5.0, <1.8.0");
+        // `<=1.8` allows every 1.8 patch, which is `<1.9.0` exactly.
+        assert_eq!(merged(">=1.2", "<=1.8").unwrap(), ">=1.2.0, <1.9.0");
+        // `>1.2` allows nothing in 1.2, which is `>=1.3.0` exactly.
+        assert_eq!(merged(">1.2", ">1.1").unwrap(), ">=1.3.0");
+        // Disjoint requirements conflict.
         assert!(merged("1.7", "2.0").is_err());
         assert!(merged("0.4", "0.5").is_err());
-        assert!(merged("0.0.3", "0.0.4").is_err());
-        // Other requirement forms must be equal.
-        assert_eq!(merged("=1.2.3", "=1.2.3").unwrap(), "=1.2.3");
-        assert!(merged("=1.2.3", "1.2").is_err());
-        assert!(merged(">=1.0, <2", "1.5").is_err());
+        assert!(merged("=1.2.3", "=1.2.4").is_err());
+        assert!(merged("<1.0", ">=1.0").is_err());
     }
 
     #[test]
