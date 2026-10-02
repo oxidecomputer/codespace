@@ -445,6 +445,12 @@ mod tests {
         assert!(merged("0.4", "0.5").is_err());
         assert!(merged("=1.2.3", "=1.2.4").is_err());
         assert!(merged("<1.0", ">=1.0").is_err());
+
+        assert_eq!(
+            merged(">=1.0, <1.3", "1.1.1-alpha.1").unwrap(),
+            ">=1.1.1, <1.3.0"
+        );
+        assert_eq!(merged(">=1.0, <1.2", "1.1.1-alpha.1").unwrap(), "~1.1.1");
     }
 
     #[test]
