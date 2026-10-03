@@ -43,8 +43,10 @@
 //!
 //! ## Ordering
 //!
-//! Within each [`Mod`], items are emitted in sort-key order and submodules
-//! in alphabetical order by name.
+//! Within each [`Mod`], items are emitted in sort-key order, followed by
+//! submodules in alphabetical order by name. A submodule given a sort key
+//! with [`Mod::set_mod_key`] is emitted among the items instead, at that
+//! key, after any item with the same key.
 //!
 //! ## Dependencies
 //!
@@ -364,6 +366,8 @@ impl Codespace {
 pub struct Mod {
     items: BTreeMap<String, TokenStream>,
     mods: BTreeMap<String, Mod>,
+    /// Sort keys for the submodules emitted among the items, by name.
+    mod_keys: BTreeMap<String, String>,
     vis: Visibility,
     docs: Vec<String>,
     attrs: Vec<TokenStream>,
@@ -461,6 +465,9 @@ impl Mod {
                 }
             }
         }
+        for (name, key) in other.mod_keys {
+            self.mod_keys.entry(name).or_insert(key);
+        }
         self.docs.extend(other.docs);
         self.attrs.extend(other.attrs);
         // Visibility: self's wins; other.vis is dropped.
@@ -493,6 +500,23 @@ impl Mod {
                 e.insert(m);
             }
         }
+    }
+
+    /// Use `key` to order the submodule identified by `name` among items.
+    ///
+    /// A keyed submodule sorts with the items by key. The key is kept through
+    /// [`Mod::merge`]. File output ([`Codespace::into_files`]) declares every
+    /// submodule at the top of its parent's file regardless.
+    ///
+    /// # Panics
+    ///
+    /// Panics if there is no submodule named `name`.
+    pub fn set_mod_key(&mut self, name: &str, key: impl Into<String>) {
+        assert!(
+            self.mods.contains_key(name),
+            "no submodule named {name:?} to key"
+        );
+        self.mod_keys.insert(name.to_string(), key.into());
     }
 
     /// Set this module's [`Visibility`], controlling how its `mod` block or
@@ -583,23 +607,56 @@ impl Mod {
     /// (`pub` by default). This module's own metadata is not emitted here;
     /// that is the caller's responsibility.
     fn into_stream(self) -> TokenStream {
+        let Self {
+            items,
+            mut mods,
+            mod_keys,
+            ..
+        } = self;
+
+        // Keyed submodules take their place among the items; the rest
+        // follow in name order.
+        let mut keyed = mod_keys
+            .into_iter()
+            .filter_map(|(name, key)| mods.remove(&name).map(|m| (key, name, m)))
+            .collect::<Vec<_>>();
+        keyed.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut keyed = keyed.into_iter().peekable();
+
         let mut out = TokenStream::new();
-        for (_, tokens) in self.items {
+        for (key, tokens) in items {
+            while keyed.peek().is_some_and(|(k, _, _)| *k < key) {
+                let (_, name, m) = keyed.next().unwrap();
+                out.extend(m.into_mod_block(&name));
+            }
             out.extend(tokens);
+            while keyed.peek().is_some_and(|(k, _, _)| *k == key) {
+                let (_, name, m) = keyed.next().unwrap();
+                out.extend(m.into_mod_block(&name));
+            }
         }
-        for (name, m) in self.mods {
-            let ident = format_ident!("{}", name);
-            let meta = m.outer_meta();
-            let vis = m.vis.to_tokens();
-            let contents = m.into_stream();
-            out.extend(quote! {
-                #meta
-                #vis mod #ident {
-                    #contents
-                }
-            });
+        for (_, name, m) in keyed {
+            out.extend(m.into_mod_block(&name));
+        }
+        for (name, m) in mods {
+            out.extend(m.into_mod_block(&name));
         }
         out
+    }
+
+    /// Render this module as a `mod` block named `name`, with its docs,
+    /// attributes, and visibility.
+    fn into_mod_block(self, name: &str) -> TokenStream {
+        let ident = format_ident!("{}", name);
+        let meta = self.outer_meta();
+        let vis = self.vis.to_tokens();
+        let contents = self.into_stream();
+        quote! {
+            #meta
+            #vis mod #ident {
+                #contents
+            }
+        }
     }
 
     /// Render this module's contents for file mode: a `mod` declaration for
@@ -1293,6 +1350,90 @@ mod tests {
         );
         let out = no_ws(&outer.into_stream().to_string());
         assert!(out.contains(r#"#[doc="Generatedtypes."]pubmodtypes{pubstructA"#));
+    }
+
+    #[test]
+    fn a_keyed_mod_sorts_among_the_items() {
+        let mut cs = Codespace::default();
+        cs.add_item("", quote! { use prelude::*; });
+        cs.add_item("Client", quote! { pub struct Client; });
+        cs.get_root_mod()
+            .get_mod("types")
+            .add_item("A", quote! { pub struct A; });
+        cs.get_root_mod()
+            .get_mod("zed")
+            .add_item("Z", quote! { pub struct Z; });
+        cs.get_root_mod().set_mod_key("types", " ");
+        let out = &cs.into_stream();
+        assert_eq!(
+            out.to_string(),
+            quote! {
+                use prelude::*;
+                pub mod types {
+                    pub struct A;
+                }
+                pub struct Client;
+                pub mod zed {
+                    pub struct Z;
+                }
+            }
+            .to_string(),
+        );
+    }
+
+    #[test]
+    fn an_item_precedes_a_mod_with_the_same_key() {
+        let mut cs = Codespace::default();
+        cs.add_item("k", quote! { pub struct Item; });
+        cs.get_root_mod()
+            .get_mod("m")
+            .add_item("M", quote! { pub struct M; });
+        cs.get_root_mod().set_mod_key("m", "k");
+        let out = &cs.into_stream();
+        assert_eq!(
+            out.to_string(),
+            quote! {
+                pub struct Item;
+                pub mod m {
+                    pub struct M;
+                }
+            }
+            .to_string()
+        );
+    }
+
+    #[test]
+    fn a_mod_key_survives_a_merge() {
+        let mut inner = Mod::default();
+        inner
+            .get_mod("types")
+            .add_item("A", quote! { pub struct A; });
+        inner.set_mod_key("types", " ");
+        let mut outer = Mod::default();
+        outer.add_item("Client", quote! { pub struct Client; });
+        outer.merge(inner);
+        let mut cs = Codespace::default();
+        cs.add_mod("api", outer);
+        let out = cs.into_stream();
+        assert_eq!(
+            out.to_string(),
+            quote! {
+                pub mod api {
+                    pub mod types {
+                        pub struct A;
+                    }
+                    pub struct Client;
+                }
+            }
+            .to_string()
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "no submodule named")]
+    fn keying_a_missing_mod_panics() {
+        let mut m = Mod::default();
+        m.set_mod_key("types", " ");
     }
 
     #[test]
