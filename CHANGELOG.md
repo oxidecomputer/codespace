@@ -2,6 +2,8 @@
 
 ## Next
 
+## [0.0.1-alpha.3] - 2026-10-04
+
 * Add support for crate dependency tracking in `Codespace` (#8)
 * Add `Mod::set_mod_key` to allow mods to be ordered among items (#9)
 
