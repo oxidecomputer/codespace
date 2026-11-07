@@ -1,11 +1,13 @@
 [package]
 name = "codespace"
-version = "0.0.1-alpha.3"
-edition = "2021"
+version = "0.1.0"
+edition = "2024"
 rust-version = "1.97"
 license = "Apache-2.0"
 repository = "https://github.com/oxidecomputer/codespace"
 description = "Structural scratch space for generated Rust code"
+keywords = ["codegen", "proc-macro2", "quote", "modules"]
+categories = ["development-tools"]
 exclude = [".github", "rust-toolchain.toml"]
 
 [dependencies]

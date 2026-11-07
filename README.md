@@ -66,5 +66,4 @@ from the code it holds.
 
 ## Notes
 
-- Early alpha; API unstable.
 - Part of the typify/progenitor code-generation stack.

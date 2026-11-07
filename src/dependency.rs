@@ -245,13 +245,15 @@ fn tilde_ceiling(v: &Version) -> Version {
 /// bare version (`0.4`, `1.2.3`), since the caret is Cargo's default, and
 /// anything else as semver renders it.
 fn toml_version(version: &VersionReq) -> String {
-    if let [Comparator {
-        op: semver::Op::Caret,
-        major,
-        minor,
-        patch,
-        pre,
-    }] = version.comparators.as_slice()
+    if let [
+        Comparator {
+            op: semver::Op::Caret,
+            major,
+            minor,
+            patch,
+            pre,
+        },
+    ] = version.comparators.as_slice()
     {
         let mut out = major.to_string();
         if let Some(minor) = minor {
