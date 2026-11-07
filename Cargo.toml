@@ -6,6 +6,8 @@ rust-version = "1.97"
 license = "Apache-2.0"
 repository = "https://github.com/oxidecomputer/codespace"
 description = "Structural scratch space for generated Rust code"
+keywords = ["codegen", "proc-macro2", "quote", "modules"]
+categories = ["development-tools"]
 exclude = [".github", "rust-toolchain.toml"]
 
 [dependencies]
