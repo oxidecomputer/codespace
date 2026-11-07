@@ -2,6 +2,11 @@
 
 ## Next
 
+## [0.1.0] - 2026-11-07
+
+* First release out of alpha; the API is unchanged since 0.0.1-alpha.3
+* Edition 2024
+
 ## [0.0.1-alpha.3] - 2026-10-04
 
 * Add support for crate dependency tracking in `Codespace` (#8)
