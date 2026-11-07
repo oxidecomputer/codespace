@@ -69,7 +69,7 @@
 #![warn(missing_docs, missing_debug_implementations)]
 
 use std::{
-    collections::{btree_map::Entry, BTreeMap},
+    collections::{BTreeMap, btree_map::Entry},
     path::{Path, PathBuf},
 };
 
@@ -1241,8 +1241,11 @@ mod tests {
         cs.get_root_mod().add_attr(quote! { allow(clippy::all) });
         cs.add_item("Foo", quote! { pub struct Foo; });
         let out = no_ws(&cs.into_stream().to_string());
-        assert!(out
-            .starts_with(r#"#![doc="Generatedcode."]#![doc="Donotedit."]#![allow(clippy::all)]"#));
+        assert!(
+            out.starts_with(
+                r#"#![doc="Generatedcode."]#![doc="Donotedit."]#![allow(clippy::all)]"#
+            )
+        );
         assert!(out.contains("pubstructFoo"));
     }
 
