@@ -4,7 +4,7 @@
 
 ## [0.1.1] - 2026-11-21
 
-* Lower the MSRV to 1.85, the first release with edition 2024
+* Lower the MSRV to 1.85
 
 ## [0.1.0] - 2026-11-07
 
