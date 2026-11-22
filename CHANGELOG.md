@@ -2,6 +2,10 @@
 
 ## Next
 
+## [0.1.1] - 2026-11-21
+
+* Lower the MSRV to 1.85
+
 ## [0.1.0] - 2026-11-07
 
 * First release out of alpha; the API is unchanged since 0.0.1-alpha.3
